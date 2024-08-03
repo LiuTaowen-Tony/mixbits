@@ -7,7 +7,7 @@ setup(
         CUDAExtension(
             "block_quant",
             ["block_quant.cu"],
-            extra_compile_args={'cxx': ['-O2'], 'nvcc': ['-O2']}
+            extra_compile_args={'cxx': ['-O3'], 'nvcc': ['-O3']}
         )
     ],
     cmdclass={

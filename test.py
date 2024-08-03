@@ -9,7 +9,8 @@ from block_quant import block_quant
 # )
 
 x = torch.randn(10, 10, device='cuda')
-y = block_quant(x, 2, 3, 5, 5, False)
+y = block_quant(x, 2, 3, 5, 5, False, False)
+y = block_quant(x, 2, 3, 5, 5, False, False)
 
 print(x)
 print(y)
