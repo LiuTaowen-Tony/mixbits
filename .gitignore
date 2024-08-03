@@ -19,9 +19,9 @@ Thumbs.db # Windows thumbnail cache
 
 # Build Output Directories
 # bin/
-# build/
-# out/ # Common build output directories
-# dist/ # Distribution directory for compiled code
+build/
+out/ # Common build output directories
+dist/ # Distribution directory for compiled code
 
 # Version Control System Folders
 .svn/

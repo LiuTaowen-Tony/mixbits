@@ -5,8 +5,8 @@ setup(
     name="block_quant",
     ext_modules=[
         CUDAExtension(
-            "block_quant_cuda",
-            ["quant_block.cu"],
+            "block_quant",
+            ["block_quant.cu"],
             extra_compile_args={'cxx': ['-O2'], 'nvcc': ['-O2']}
         )
     ],

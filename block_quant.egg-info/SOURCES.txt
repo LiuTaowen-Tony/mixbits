@@ -1,4 +1,4 @@
-quant_block.cu
+block_quant.cu
 setup.py
 block_quant.egg-info/PKG-INFO
 block_quant.egg-info/SOURCES.txt

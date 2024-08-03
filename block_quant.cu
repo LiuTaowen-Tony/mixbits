@@ -1,16 +1,17 @@
+#include <cstdio>
 #include <cstdlib>
 #include <math.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <climits>
 #include <stdint.h>
+#include <climits>
 #include <tuple>
-#include <torch/extension.h>
+#include <torch/torch.h>
 #include <ATen/ATen.h>
 
 #define hd __host__ __device__
 #define il __forceinline__
-#define hd_inline __host__ __device__ __forceinline__
+#define d_inline __device__ __forceinline__
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
@@ -18,35 +19,21 @@
   CHECK_CUDA(x);       \
   CHECK_CONTIGUOUS(x)
 
-hd_inline int cdiv (int a, int b) {
+
+__host__ d_inline int cdiv (int a, int b) {
     return (a + b - 1) / b;
 }
 
 
-hd_inline uint32_t reinterpret(float num) {
+d_inline uint32_t reinterpret(float num) {
     return *(reinterpret_cast<uint32_t*>(&num));
 }
 
-hd_inline float reinterpret_back(uint32_t num) {
+d_inline float reinterpret_back(uint32_t num) {
     return *(reinterpret_cast<float*>(&num));
 }
 
-// hd_inline uint32_t get_sign(float num) {
-//     uint32_t unum = reinterpret(num);
-//     return unum >> 31;
-// }
-
-// hd_inline uint32_t get_exp(float num) {
-//     uint32_t unum = reinterpret(num);
-//     return unum << 1 >> 24;
-// }
-
-// hd_inline uint32_t get_man(float num) {
-//     uint32_t unum = reinterpret(num);
-//     return unum << 9 >> 9;
-// }
-
-hd_inline uint32_t man_round(
+d_inline uint32_t man_round(
   uint32_t target,
   int man_bits,
   uint32_t rand_prob
@@ -57,7 +44,7 @@ hd_inline uint32_t man_round(
   return quantized;
 }
 
-hd_inline uint32_t clip_exp(
+d_inline uint32_t clip_exp(
   uint32_t man_rounded,
   int exp_width,
   int man_width,
@@ -79,10 +66,9 @@ hd_inline uint32_t clip_exp(
 }
 
 
-hd_inline float single_quant(float num, int man_width, int exp_width, float scaling_factor, float zero_point, uint32_t round_helper) {
+d_inline float single_quant(float num, int man_width, int exp_width, float scaling_factor, float zero_point, uint32_t round_helper) {
     num = num - zero_point;
     num = num / scaling_factor;
-
 
     uint32_t unum = reinterpret(num);
     int target_exp = (unum << 1 >> 1 >> 23) -127; 
@@ -104,50 +90,36 @@ hd_inline float single_quant(float num, int man_width, int exp_width, float scal
     return num;
 }
 
-template <typename T, int NUM>
-__inline__ __device__ T warpReduceMax(T* val, int thread_group_width = 32) {
-#pragma unroll
-  for (int i = 0; i < NUM; i++) {
-#pragma unroll
-    for (int mask = thread_group_width / 2; mask > 0; mask >>= 1) {
-      val[i] = max(val[i], __shfl_xor_sync(0xffffffff, val[i], mask, 32));
-    }
-  }
-  return (T)(0.0f);
+template <typename T>
+d_inline float load_as_fp32(const T* ptr, int offset) {
+  return *(ptr + offset);
+}
+
+template <>
+d_inline float load_as_fp32<__nv_bfloat16>(const __nv_bfloat16* ptr, int offset) {
+  return __bfloat162float(*(ptr + offset));
 }
 
 template <typename T>
-hd_inline float type_convert_load(const void* ptr, int offset);
-
-template <>
-hd_inline float type_convert_load<float>(const void* ptr, size_t offset) {
-  return *(((float*) ptr) + offset);
+d_inline void store_from_fp32(T* ptr, float val, int offset) {
+  *(ptr + offset) = val;
 }
 
-// template <>
-// hd_inline float type_convert_load<__bfloat>(const void* ptr, size_t offset) {
-//   return __bfloat162float(*(((__nv_bfloat16*) ptr) + offset));
-// }
-
-template <typename T>
-hd_inline void type_convert_store(void* ptr, float val);
-
 template <>
-hd_inline void type_convert_store<float>(void* ptr, float val, size_t offset) {
-  *(((float*) ptr) + offset) = val;
+d_inline void store_from_fp32<__nv_bfloat16>(__nv_bfloat16* ptr, float val, int offset) {
+  *(ptr + offset) = __float2bfloat16(val);
 }
 
-// template <>
-// hd_inline void type_convert_store<__bfloat>(void* ptr, float val, size_t offset) {
-//   *(((__nv_bfloat16*) ptr) + offset) = __float2bfloat16(val);
-// }
 
 // for block has more than 32 elements
-template <typename TensorDType>
+template<
+  typename LoadType, 
+  typename StoreType,
+>
 __global__ void big_block_kernel(
-  const void* __restrict__ a,
+  const LoadType* __restrict__ a,
   uint32_t* __restrict__ rand,
-  void* __restrict__ b,
+  StoreType* __restrict__ b,
   int block_m,
   int block_n,
   int M,
@@ -168,8 +140,7 @@ __global__ void big_block_kernel(
   mask &= blockIdx.y * block_n + j < N;
 
   float val = 0;
-  if (mask) 
-    val = type_convert_load<TensorDType>(a, block_offset + i * N + j);
+  if (mask) { val = load_as_fp32(a, block_offset + i * N + j); }
 
   // Perform warp-level reduction to find the maximum value in this block
   float scaling_factor = val;
@@ -177,27 +148,31 @@ __global__ void big_block_kernel(
       scaling_factor = max(scaling_factor, __shfl_down_sync(0xFFFFFFFF, scaling_factor, offset));
   }
   __syncthreads();
+  __shared__ float shared_scaling_factor;
+  if (i == 0 && j == 0) { shared_scaling_factor = scaling_factor; }
+  __syncthreads();
+  scaling_factor = shared_scaling_factor;
   
   // quantize and store back
   if (! mask) { return; }
-  uint32_t round_helper = (1 << (23 - man_width)) - 1;
+  uint32_t round_helper = 1 << (23 - man_width - 1);
   if (is_stochastic_round) { round_helper = rand[block_offset + i * N + j]; }
   float out = single_quant(val, man_width, exp_width, scaling_factor, 0.0, round_helper);
-  type_convert_store<TensorDType>(b, out, block_offset + i * N + j);
+  store_from_fp32(b, out, block_offset + i * N + j);
 }
 
-template <typename TensorDType>
+template<typename LoadType, typename StoreType>
 __global__ void small_block_kernel(
-  const void* __restrict__ a,
+  const LoadType* __restrict__ a,
   uint32_t* __restrict__ rand,
-  void* __restrict__ b,
+  StoreType* __restrict__ b,
   int block_m,
   int block_n,
   int M,
   int N,
   int man_width,
   int exp_width,
-  bool is_stochastic_round,
+  bool is_stochastic_round
 )
 {
   // when block is small one thread quantize a block
@@ -210,7 +185,7 @@ __global__ void small_block_kernel(
   for (int i = 0; i < block_m; i++) {
     for (int j = 0; j < block_n; j++) {
       if (pidx * block_m + i < M && pidy * block_n + j < N) { 
-        block_a[i * block_n + j] = type_convert_load<TensorDType>(a, block_offset + i * N + j);
+        block_a[i * block_n + j] = load_as_fp32(a, block_offset + i * N + j);
       } else {
         block_a[i * block_n + j] = 0;
       }
@@ -225,58 +200,59 @@ __global__ void small_block_kernel(
     }
   }
   
-  uint32_t round_helper = (1 << (23 - man_width)) - 1;
 
   // quantize and store back
+  uint32_t round_helper = 1 << (23 - man_width - 1);
   for (int i = 0; i < block_m; i++) {
     for (int j = 0; j < block_n; j++) {
       if (pidx * block_m + i < M && pidy * block_n + j < N) {
         float out = single_quant(block_a[i * block_n + j], man_width, exp_width, scaling_factor, 0.0, round_helper);
-        type_convert_store<TensorDType>(b, out, block_offset + i * N + j);
+        b[block_offset + i * N + j] = out;
       }
     }
   } 
 }
 
-at::Tensor block_quant(
-  at::Tensor a,
+torch::Tensor block_quant(
+  torch::Tensor a,
   int man_width, int exp_width,
   int block_m, int block_n,
   bool is_stochastic_round
 )
 {
+  CHECK_INPUT(a);
   cudaSetDevice(a.get_device());
-  auto b = at::zeros_like(a);
-  at::Tensor rand;
-  if (is_stochastic_round)
-    rand = at::rand_like(a);
-  int block_size = block_m * block_n;
+  auto b = torch::zeros_like(a);
+  uint32_t* rand_ptr = nullptr;
+  if (is_stochastic_round) {
+    torch::Tensor rand = torch::randint_like(a, INT_MAX, 
+      torch::device(at::kCUDA).dtype(at::kUInt32));
+    rand_ptr = rand.data_ptr<uint32_t>();
+  }
   int M = a.size(0);
   int N = a.size(1);
-  auto type_convert = 0;
 
-  if (block_size < 32) {
+  // // if (block_size < 32) {
     dim3 block(4, 8);
     dim3 grid(cdiv(M, block_m * 4), cdiv(N, block_n * 8));
-    using TensorDType = float;
-    small_block_kernel<TensorDType><<<grid, block>>>(
-      a.data_ptr<void>(), rand.data_ptr<uint32_t>(), b.data_ptr<void>(),
+    small_block_kernel<<<grid, block>>>(
+      a.data_ptr<float>(), rand_ptr, b.data_ptr<float>(),
       block_m, block_n,
       M, N,
       man_width, exp_width,
-      is_stochastic_round,
+      is_stochastic_round
     );
-  } else {
-    dim3 block(block_m, block_n);
-    dim3 grid(cdiv(M, block_m), cdiv(N, block_n));
-    big_block_kernel<<<grid, block>>>(
-      a.data_ptr<float>(), rand.data_ptr<uint32_t>(), b.data_ptr<float>(),
-      block_m, block_n,
-      M, N,
-      man_width, exp_width,
-      is_stochastic_round,
-    );
-  }
+  // // } else {
+    // dim3 block(block_m, block_n);
+    // dim3 grid(cdiv(M, block_m), cdiv(N, block_n));
+    // big_block_kernel<<<grid, block>>>(
+    //   a.data_ptr<float>(), rand_ptr, b.data_ptr<float>(),
+    //   block_m, block_n,
+    //   M, N,
+    //   man_width, exp_width,
+    //   is_stochastic_round
+    // );
+  // }
   return b;
 }
 
