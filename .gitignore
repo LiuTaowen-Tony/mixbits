@@ -4,6 +4,7 @@ __pycache__/
 .env
 .venv
 wandb/
+*.egg-info
 
 # Operating System Generated Files
 .DS_Store # MacOS folder metadata
