@@ -7,37 +7,37 @@ wandb/
 *.egg-info
 
 # Operating System Generated Files
-.DS_Store # MacOS folder metadata
-Thumbs.db # Windows thumbnail cache
+.DS_Store
+Thumbs.db
 *.swp
-*.swo # Linux/Unix Vim swap files
+*.swo
 
 # Editor and IDE Specific Files
-.vscode/ # VSCode configuration files
-.idea/ # IntelliJ IDEA configuration files
-*.sublime-* # Sublime Text files
-.settings/ # Eclipse files
+.vscode/
+.idea/
+*.sublime-*
+.settings/
 
 # Build Output Directories
 # bin/
 build/
-out/ # Common build output directories
-dist/ # Distribution directory for compiled code
+out/
+dist/
 
 # Version Control System Folders
 .svn/
-CVS/ # Subversion and CVS folders
+CVS/
 
 # Temporary Files and Logs
 # *.log # Log files
 *.tmp
-*.temp # Temporary files
+*.temp
 
 # Security and Environment Files
 .env
-.env.local # Environment configuration files
+.env.local
 *.pem
-*.key # Private keys and certificate files
+*.key
 
 # Database Files
 *.db
